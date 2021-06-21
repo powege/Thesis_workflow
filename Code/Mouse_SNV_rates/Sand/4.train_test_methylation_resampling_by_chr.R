@@ -1,0 +1,284 @@
+### SCRIPT that runs cross validation by chromosome (selects 4 random chromosomes for the test dataset)
+
+rm(list = ls())
+graphics.off()
+
+library(data.table)
+library(stringi)
+
+### FUNCTIONS 
+
+# FUNCTION that sums across complimantary strands (ie AGC == GCT)
+complement <- function(forward){
+  
+  colnames(forward) <- c("k_from", "k_to", "k_from_N", "k_to_N")
+  complement <- forward # reverse strand
+  complement$k_from <- stri_reverse(complement$k_from)
+  
+  # replace all bases with complement
+  complement$k_from <- gsub("A", "B", complement$k_from)
+  complement$k_from <- gsub("C", "D", complement$k_from)
+  complement$k_from <- gsub("T", "A", complement$k_from)
+  complement$k_from <- gsub("G", "C", complement$k_from)
+  complement$k_from <- gsub("B", "T", complement$k_from)
+  complement$k_from <- gsub("D", "G", complement$k_from)
+  complement$k_to <- gsub("A", "B", complement$k_to)
+  complement$k_to <- gsub("C", "D", complement$k_to)
+  complement$k_to <- gsub("T", "A", complement$k_to)
+  complement$k_to <- gsub("G", "C", complement$k_to)
+  complement$k_to <- gsub("B", "T", complement$k_to)
+  complement$k_to <- gsub("D", "G", complement$k_to)
+  
+  # sum across complements
+  output <- rbind(forward, complement)
+  output <- setDT(output)[, .(k_from_N = sum(k_from_N), k_to_N = sum(k_to_N)), by = .(k_from, k_to)]
+  
+  return(output)
+}
+
+### ARGUMENTS
+
+#!/usr/bin/env Rscript
+args = commandArgs(trailingOnly=TRUE)
+
+# test if there are two arguments: if not, return an error
+if (length(args)==0) {
+  stop("arguments must be supplied", call.=FALSE)
+} 
+
+### SET VARS
+
+p.mu.chr.file <- args[1]
+out.specific.AC.file <- args[2]
+out.specific.CCG.file <- args[2]
+chr <- sample(1:19, 4)
+
+# p.mu.chr.file <- "~/Dropbox/PhD/Data/Thesis_workflow/Results/Mouse_SNV_rates/WM_Harr_etal_2016_allSPECIES_k11_SNV_autosome_counts.csv.gz" # P(mu) 7mer file
+# chr <- 19
+
+### IMPORT
+k11_chr <- fread(paste0("gunzip -cq ", p.mu.chr.file))
+# tmp <- k11_chr
+# tmp$chromosome <- 18
+# k11_chr$chromosome <- 19
+# k11_chr <- rbind(k11_chr, tmp)
+# rm(tmp)
+
+### FORMAT
+
+colnames(k11_chr) <- c("k11_from", "k11_from_N", "k11_to", "k11_to_N", "chromosome") # colnames
+k11_chr$to <- stri_sub(k11_chr$k11_to, 6, -6) # extract middle base change
+
+## split by chr for training and testing datasets
+k11_test <- k11_chr[chromosome %in% chr][,c("k11_from", "k11_from_N", "to", "k11_to_N")] 
+k11_train <- k11_chr[!chromosome %in% chr][,c("k11_from", "k11_from_N", "to", "k11_to_N")]
+k11_test <- setDT(k11_test)[, .(k11_from_N = sum(k11_from_N), k11_to_N = sum(k11_to_N)), by = .(k11_from, to)] # sum across kmers by chromosome
+k11_train <- setDT(k11_train)[, .(k11_from_N = sum(k11_from_N), k11_to_N = sum(k11_to_N)), by = .(k11_from, to)] # sum across kmers by chromosome
+rm(k11_chr)
+
+## cut to 9mer 
+k9_train <- k11_train # 9mer
+colnames(k9_train) <- gsub("k11", "k9", colnames(k11_train)) # colnames
+k9_train$k9_from <- stri_sub(k9_train$k9_from, 2, -2)
+k9_train <- setDT(k9_train)[, .(k9_from_N = sum(k9_from_N), k9_to_N = sum(k9_to_N)), by = .(k9_from, to)] # sum across kmers
+
+k9_test <- k11_test # 9mer
+colnames(k9_test) <- gsub("k11", "k9", colnames(k11_test)) # colnames
+k9_test$k9_from <- stri_sub(k9_test$k9_from, 2, -2)
+k9_test <- setDT(k9_test)[, .(k9_from_N = sum(k9_from_N), k9_to_N = sum(k9_to_N)), by = .(k9_from, to)] # sum across kmers
+rm(k11_test, k11_train)
+
+## average complementary strands
+k9_test <- complement(k9_test)
+colnames(k9_test) <- c("k9_from", "to", "k9_from_N", "k9_to_N")
+k9_train <- complement(k9_train)
+colnames(k9_train) <- c("k9_from", "to", "k9_from_N", "k9_to_N")
+
+## subset A and C mutations 
+k9_test$k1_from <- stri_sub(k9_test$k9_from, 5, -5) # extract middle base change
+k9_train$k1_from <- stri_sub(k9_train$k9_from, 5, -5) # extract middle base change
+k9_test <- k9_test[k1_from == "A" | k1_from == "C"][,c("k9_from", "k9_from_N", "to", "k9_to_N")]
+k9_train <- k9_train[k1_from == "A" | k1_from == "C"][,c("k9_from", "k9_from_N", "to", "k9_to_N")]
+
+## calculate pMU for train
+
+k7_train <- k9_train # 7mer
+colnames(k7_train) <- gsub("k9", "k7", colnames(k9_train)) # colnames
+k7_train$k7_from <- stri_sub(k7_train$k7_from, 2, -2)
+k7_train <- setDT(k7_train)[, .(k7_from_N = sum(k7_from_N), k7_to_N = sum(k7_to_N)), by = .(k7_from, to)] # sum across kmers
+
+k5_train <- k9_train # 5mer
+colnames(k5_train) <- gsub("k9", "k5", colnames(k9_train)) # colnames
+k5_train$k5_from <- stri_sub(k5_train$k5_from, 3, -3)
+k5_train <- setDT(k5_train)[, .(k5_from_N = sum(k5_from_N), k5_to_N = sum(k5_to_N)), by = .(k5_from, to)] # sum across kmers
+
+k3_train <- k9_train # 3mer
+colnames(k3_train) <- gsub("k9", "k3", colnames(k9_train))
+k3_train$k3_from <- stri_sub(k3_train$k3_from, 4, -4)
+k3_train <- setDT(k3_train)[, .(k3_from_N = sum(k3_from_N), k3_to_N = sum(k3_to_N)), by = .(k3_from, to)] # sum across kmers
+
+k1CG_1 <- k3_train[which(stri_sub(k3_train$k3_from, 2, -2) == "A" | stri_sub(k3_train$k3_from, 2, -2) == "C")] # k1 CG
+k1CG_1$k1CG_from <- NA
+k1CG_1$k1CG_from[ unique(c( grep("CG", k1CG_1$k3_from))) ] <- "C (CG)"
+k1CG_1$k1CG_from[is.na(k1CG_1$k1CG_from)] <- "C (nonCG)"
+k1CG_1$k1CG_from[which(stri_sub(k1CG_1$k3_from, 2, -2) == "A")] <- "A"
+if (length(unique(k1CG_1$k3_from_N)) == 32){
+  CG_sub <- k1CG_1[k1CG_from == "C (CG)"]
+  nonCG_sub <- k1CG_1[k1CG_from == "C (nonCG)"]
+  A_sub <- k1CG_1[k1CG_from == "A"]
+  k1CG_2 <- data.table(k1CG_from = c(rep("C (CG)", 3), rep("C (nonCG)", 3), rep("A", 3)),
+                       to = c(rep(c("A", "G", "T"), 2), rep(c("C", "G", "T"), 1)),
+                       k1CG_from_N = c(rep(sum(unique(CG_sub$k3_from_N)), 3),
+                                       rep(sum(unique(nonCG_sub$k3_from_N)), 3),
+                                       rep(sum(unique(A_sub$k3_from_N)), 3)),
+                       k1CG_to_N =c(sum(CG_sub$k3_to_N[CG_sub$to == "A"]),
+                                    sum(CG_sub$k3_to_N[CG_sub$to == "G"]),
+                                    sum(CG_sub$k3_to_N[CG_sub$to == "T"]),
+                                    sum(nonCG_sub$k3_to_N[nonCG_sub$to == "A"]),
+                                    sum(nonCG_sub$k3_to_N[nonCG_sub$to == "G"]),
+                                    sum(nonCG_sub$k3_to_N[nonCG_sub$to == "T"]),
+                                    sum(A_sub$k3_to_N[A_sub$to == "C"]),
+                                    sum(A_sub$k3_to_N[A_sub$to == "G"]),
+                                    sum(A_sub$k3_to_N[A_sub$to == "T"]))
+  )
+  rm(CG_sub, nonCG_sub, A_sub)
+}
+k1CG_1 <- k1CG_1[,c("k3_from", "to", "k1CG_from")]
+k1CG_train <- k1CG_2[k1CG_1, on = c("k1CG_from", "to")]
+rm(k1CG_1, k1CG_2)
+
+# kmer rates of change
+k9_train$k9_mu_rate <- k9_train$k9_to_N / k9_train$k9_from_N
+k7_train$k7_mu_rate <- k7_train$k7_to_N / k7_train$k7_from_N
+k5_train$k5_mu_rate <- k5_train$k5_to_N / k5_train$k5_from_N
+k3_train$k3_mu_rate <- k3_train$k3_to_N / k3_train$k3_from_N
+k1CG_train$k1CG_mu_rate <- k1CG_train$k1CG_to_N / k1CG_train$k1CG_from_N
+
+k9_train$k9_mu_rate[k9_train$k9_from_N == 0] <- 0
+k7_train$k7_mu_rate[k7_train$k7_from_N == 0] <- 0
+k5_train$k5_mu_rate[k5_train$k5_from_N == 0] <- 0
+k3_train$k3_mu_rate[k3_train$k3_from_N == 0] <- 0
+k1CG_train$k1CG_mu_rate[k1CG_train$k1CG_from_N == 0] <- 0
+
+k9_train$k7_from <- stri_sub(k9_train$k9_from, 2, -2)
+k9_train$k5_from <- stri_sub(k9_train$k9_from, 3, -3)
+k9_train$k3_from <- stri_sub(k9_train$k9_from, 4, -4)
+k9_train$k1_from <- stri_sub(k9_train$k9_from, 5, -5)
+k9_train <- k7_train[k9_train, on = c("k7_from", "to")]
+k9_train <- k5_train[k9_train, on = c("k5_from", "to")]
+k9_train <- k3_train[k9_train, on = c("k3_from", "to")]
+k9_train <- k1CG_train[k9_train, on = c("k3_from", "to")]
+rm(k3_train, k5_train, k7_train, k1CG_train)
+
+k9_test$k9_mu_rate <- k9_test$k9_to_N / k9_test$k9_from_N
+k9_test$k9_mu_rate[k9_test$k9_from_N == 0] <- 0
+k9_test$k1_from <- stri_sub(k9_test$k9_from, 5, -5)
+
+## Sample 1000 from each k9 in test
+# k9_test$k9_from_N_sample <- 1000
+# k9_test$k9_mu_N_sample <- rbinom(n = 1:nrow(k9_test), size = 1000, prob = k9_test$k9_mu_rate)
+# k9_test$k9_mu_rate_sample <- k9_test$k9_mu_N_sample / k9_test$k9_from_N_sample
+
+## remove all k9 that are not observed in test
+# length(test$k9_from_N[test$k9_from_N == 0]) / nrow(test) # fraction of k9_from_N = 0
+# length(train$k9_from_N[train$k9_from_N == 0]) / nrow(train)
+ind <- unique(c(which(k9_test$k9_from_N == 0), which(k9_train$k9_from_N == 0)))
+if (length(ind) != 0){
+test_specific <- k9_test[-ind,]
+train_specific <- k9_train[-ind,]
+} else { 
+  test_specific <- k9_test
+  train_specific <- k9_train }
+# length(test_specific$k9_from_N[test_specific$k9_from_N == 0]) / nrow(test_specific) # fraction of k9_from_N = 0
+# length(train_specific$k9_from_N[train_specific$k9_from_N == 0]) / nrow(train_specific)
+
+test_specific_A <- test_specific[k1_from == "A"]
+train_specific_A <- train_specific[k1_from == "A"]
+out_specific_A <- list()
+for (j in 1:length(unique(train_specific_A$to))){
+  out_specific_A[[j]] <- data.table(
+    k1_from = train_specific_A$k1_from[1],
+    to = unique(train_specific_A$to)[j],
+    obs_mu = sum(test_specific_A$k9_mu_rate[test_specific_A$to == unique(train_specific_A$to)[j]]) / length(test_specific_A$k9_mu_rate[test_specific_A$to == unique(train_specific_A$to)[j]]), # sum (mu rates) / n (mu rates)
+    exp_mu_k1CG = sum(train_specific_A$k1CG_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]]) / length(train_specific_A$k1CG_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]]),
+    exp_mu_k3 = sum(train_specific_A$k3_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]]) / length(train_specific_A$k3_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]]),
+    exp_mu_k5 = sum(train_specific_A$k5_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]]) / length(train_specific_A$k5_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]]),
+    exp_mu_k7 = sum(train_specific_A$k7_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]]) / length(train_specific_A$k7_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]]),
+    exp_mu_k9 = sum(train_specific_A$k9_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]]) / length(train_specific_A$k9_mu_rate[train_specific_A$to == unique(train_specific_A$to)[j]])
+  )
+}
+
+train_specific_C <- train_specific[k1_from == "C"]
+test_specific_C <- test_specific[k1_from == "C"]
+out_specific_C <- list()
+for (j in 1:length(unique(train_specific_C$to))){
+  out_specific_C[[j]] <- data.table(
+    k1_from = train_specific_C$k1_from[1],
+    to = unique(train_specific_C$to)[j],
+    obs_mu = sum(test_specific_C$k9_mu_rate[test_specific_C$to == unique(train_specific_C$to)[j]]) / length(test_specific_C$k9_mu_rate[test_specific_C$to == unique(train_specific_C$to)[j]]), # sum (mu rates) / n (mu rates)
+    exp_mu_k1CG = sum(train_specific_C$k1CG_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]]) / length(train_specific_C$k1CG_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]]),
+    exp_mu_k3 = sum(train_specific_C$k3_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]]) / length(train_specific_C$k3_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]]),
+    exp_mu_k5 = sum(train_specific_C$k5_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]]) / length(train_specific_C$k5_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]]),
+    exp_mu_k7 = sum(train_specific_C$k7_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]]) / length(train_specific_C$k7_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]]),
+    exp_mu_k9 = sum(train_specific_C$k9_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]]) / length(train_specific_C$k9_mu_rate[train_specific_C$to == unique(train_specific_C$to)[j]])
+  )
+}
+out_specific_A_C <- do.call("rbind", c(out_specific_A, out_specific_C))
+out_specific_A_C$test_chromosome <- paste(chr, collapse = "-")
+
+train_specific_C_noCG <- train_specific_C[which(stri_sub(train_specific_C$k9_from, 5, -4) != "CG"),]
+test_specific_C_noCG <- test_specific_C[which(stri_sub(test_specific_C$k9_from, 5, -4) != "CG"),]
+out_specific_C_noCG <- list()
+for (j in 1:length(unique(train_specific_C_noCG$to))){
+  out_specific_C_noCG[[j]] <- data.table(
+    k1_from = train_specific_C_noCG$k1_from[1],
+    to = unique(train_specific_C_noCG$to)[j],
+    obs_mu = sum(test_specific_C_noCG$k9_mu_rate[test_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]) / length(test_specific_C_noCG$k9_mu_rate[test_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]), # sum (mu rates) / n (mu rates)
+    exp_mu_k1CG = sum(train_specific_C_noCG$k1CG_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]) / length(train_specific_C_noCG$k1CG_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]),
+    exp_mu_k3 = sum(train_specific_C_noCG$k3_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]) / length(train_specific_C_noCG$k3_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]),
+    exp_mu_k5 = sum(train_specific_C_noCG$k5_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]) / length(train_specific_C_noCG$k5_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]),
+    exp_mu_k7 = sum(train_specific_C_noCG$k7_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]) / length(train_specific_C_noCG$k7_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]),
+    exp_mu_k9 = sum(train_specific_C_noCG$k9_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]]) / length(train_specific_C_noCG$k9_mu_rate[train_specific_C_noCG$to == unique(train_specific_C_noCG$to)[j]])
+  )
+}
+out_specific_C_noCG <- do.call("rbind", out_specific_C_noCG)
+out_specific_C_noCG$test_chromosome <- paste(chr, collapse = "-")
+out_specific_C_noCG$CG_status <- "nonCG"
+
+train_specific_C_CG <- train_specific_C[which(stri_sub(train_specific_C$k9_from, 5, -4) == "CG"),]
+test_specific_C_CG <- test_specific_C[which(stri_sub(test_specific_C$k9_from, 5, -4) == "CG"),]
+out_specific_C_CG <- list()
+for (j in 1:length(unique(train_specific_C_CG$to))){
+  out_specific_C_CG[[j]] <- data.table(
+    k1_from = train_specific_C_CG$k1_from[1],
+    to = unique(train_specific_C_CG$to)[j],
+    obs_mu = sum(test_specific_C_CG$k9_mu_rate[test_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]) / length(test_specific_C_CG$k9_mu_rate[test_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]), # sum (mu rates) / n (mu rates)
+    exp_mu_k1CG = sum(train_specific_C_CG$k1CG_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]) / length(train_specific_C_CG$k1CG_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]),
+    exp_mu_k3 = sum(train_specific_C_CG$k3_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]) / length(train_specific_C_CG$k3_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]),
+    exp_mu_k5 = sum(train_specific_C_CG$k5_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]) / length(train_specific_C_CG$k5_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]),
+    exp_mu_k7 = sum(train_specific_C_CG$k7_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]) / length(train_specific_C_CG$k7_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]),
+    exp_mu_k9 = sum(train_specific_C_CG$k9_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]]) / length(train_specific_C_CG$k9_mu_rate[train_specific_C_CG$to == unique(train_specific_C_CG$to)[j]])
+  )
+}
+out_specific_C_CG <- do.call("rbind", out_specific_C_CG)
+out_specific_C_CG$test_chromosome <- paste(chr, collapse = "-")
+out_specific_C_CG$CG_status <- "CG"
+out_specific_C_CG <- rbind(out_specific_C_CG, out_specific_C_noCG)
+
+### EXPORT
+fwrite(out_specific_A_C, out.specific.AC.file, append = T)
+fwrite(out_specific_C_CG, out.specific.CCG.file, append = T)
+
+
+#####
+
+
+
+
+
+
+
+
+
+
+
